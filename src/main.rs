@@ -23,8 +23,15 @@ impl<'de> Visitor<'de> for PixelPlacementVisotor {
     {
         let mut timestamp: i64 = i64::MAX;
         let mut user_hash: String = String::from("");
-        let mut coordinate_x: u16 = u16::MAX;
-        let mut coordinate_y: u16 = u16::MAX;
+        let mut coordinates_1: Coordinates = Coordinates {
+            x: u16::MAX,
+            y: u16::MAX,
+        };
+        let mut coordinates_2: Coordinates = Coordinates {
+            x: u16::MAX,
+            y: u16::MAX,
+        };
+        let mut is_rect: bool = false;
         let mut color: String = String::from("");
         let mut year: PlacementYear = PlacementYear::_UNKOWN;
 
@@ -42,27 +49,62 @@ impl<'de> Visitor<'de> for PixelPlacementVisotor {
                 }
                 "color" => {
                     match u16::from_str(&value) {
-                        Ok(value) => {
-                            match value {
-                                0 => { color = String::from("#FFFFFF"); }
-                                1 => { color = String::from("#E4E4E4"); }
-                                2 => { color = String::from("#888888"); }
-                                3 => { color = String::from("#222222"); }
-                                4 => { color = String::from("#FFA7D1"); }
-                                5 => { color = String::from("#E50000"); }
-                                6 => { color = String::from("#E59500"); }
-                                7 => { color = String::from("#A06A42"); }
-                                8 => { color = String::from("#E5D900"); }
-                                9 => { color = String::from("#94E044"); }
-                                10 => { color = String::from("#02BE01"); }
-                                11 => { color = String::from("#00E5F0"); }
-                                12 => { color = String::from("#0083C7"); }
-                                13 => { color = String::from("#0000EA"); }
-                                14 => { color = String::from("#E04AFF"); }
-                                15 => { color = String::from("#820080"); }
-                                _ => { return Err(A::Error::invalid_value(serde::de::Unexpected::Unsigned(value.into()), &"index between 0 and 15")); }
+                        Ok(value) => match value {
+                            0 => {
+                                color = String::from("#FFFFFF");
                             }
-                        }
+                            1 => {
+                                color = String::from("#E4E4E4");
+                            }
+                            2 => {
+                                color = String::from("#888888");
+                            }
+                            3 => {
+                                color = String::from("#222222");
+                            }
+                            4 => {
+                                color = String::from("#FFA7D1");
+                            }
+                            5 => {
+                                color = String::from("#E50000");
+                            }
+                            6 => {
+                                color = String::from("#E59500");
+                            }
+                            7 => {
+                                color = String::from("#A06A42");
+                            }
+                            8 => {
+                                color = String::from("#E5D900");
+                            }
+                            9 => {
+                                color = String::from("#94E044");
+                            }
+                            10 => {
+                                color = String::from("#02BE01");
+                            }
+                            11 => {
+                                color = String::from("#00E5F0");
+                            }
+                            12 => {
+                                color = String::from("#0083C7");
+                            }
+                            13 => {
+                                color = String::from("#0000EA");
+                            }
+                            14 => {
+                                color = String::from("#E04AFF");
+                            }
+                            15 => {
+                                color = String::from("#820080");
+                            }
+                            _ => {
+                                return Err(A::Error::invalid_value(
+                                    serde::de::Unexpected::Unsigned(value.into()),
+                                    &"index between 0 and 15",
+                                ));
+                            }
+                        },
                         Err(error) => {
                             return Err(A::Error::custom(error));
                         }
@@ -71,12 +113,18 @@ impl<'de> Visitor<'de> for PixelPlacementVisotor {
                 }
                 "coordinate" => {
                     let nums = value.split(",").collect::<Vec<&str>>();
-                    if nums.len() != 2 {
-                        return Err(serde::de::Error::invalid_length(3, &"2"));
+                    match nums.len() {
+                        2 => {}
+                        4 => {
+                            is_rect = true;
+                        }
+                        _ => {
+                            return Err(serde::de::Error::invalid_length(nums.len(), &"2"));
+                        }
                     }
                     match u16::from_str(nums[0]) {
                         Ok(value) => {
-                            coordinate_x = value;
+                            coordinates_1.x = value;
                         }
                         Err(error) => {
                             return Err(A::Error::custom(error));
@@ -84,10 +132,28 @@ impl<'de> Visitor<'de> for PixelPlacementVisotor {
                     }
                     match u16::from_str(nums[1]) {
                         Ok(value) => {
-                            coordinate_y = value;
+                            coordinates_1.y = value;
                         }
                         Err(error) => {
                             return Err(A::Error::custom(error));
+                        }
+                    }
+                    if is_rect {
+                        match u16::from_str(nums[2]) {
+                            Ok(value) => {
+                                coordinates_2.x = value;
+                            }
+                            Err(error) => {
+                                return Err(A::Error::custom(error));
+                            }
+                        }
+                        match u16::from_str(nums[3]) {
+                            Ok(value) => {
+                                coordinates_2.y = value;
+                            }
+                            Err(error) => {
+                                return Err(A::Error::custom(error));
+                            }
                         }
                     }
                     year = PlacementYear::_2022;
@@ -95,7 +161,7 @@ impl<'de> Visitor<'de> for PixelPlacementVisotor {
                 "x_coordinate" => {
                     match u16::from_str(&value) {
                         Ok(value) => {
-                            coordinate_x = value;
+                            coordinates_1.x = value;
                         }
                         Err(error) => {
                             return Err(A::Error::custom(error));
@@ -106,7 +172,7 @@ impl<'de> Visitor<'de> for PixelPlacementVisotor {
                 "y_coordinate" => {
                     match u16::from_str(&value) {
                         Ok(value) => {
-                            coordinate_y = value;
+                            coordinates_1.y = value;
                         }
                         Err(error) => {
                             return Err(A::Error::custom(error));
@@ -118,12 +184,15 @@ impl<'de> Visitor<'de> for PixelPlacementVisotor {
             }
         }
 
+        if is_rect { println!("Rect from {:?} to {:?}.", coordinates_1, coordinates_2); }
+
         Ok(PixelPlacement {
             timestamp,
             user_hash,
-            coordinates: Coordinates {
-                x: coordinate_x,
-                y: coordinate_y,
+            coordinates: if !is_rect {
+                PlacementCoordinates::Tile(coordinates_1)
+            } else {
+                PlacementCoordinates::Rect(coordinates_1, coordinates_2)
             },
             color,
             year,
@@ -135,9 +204,15 @@ impl<'de> Visitor<'de> for PixelPlacementVisotor {
 struct PixelPlacement {
     timestamp: i64,
     user_hash: String,
-    coordinates: Coordinates,
+    coordinates: PlacementCoordinates,
     color: String,
     year: PlacementYear,
+}
+
+#[derive(Debug)]
+enum PlacementCoordinates {
+    Tile(Coordinates),
+    Rect(Coordinates, Coordinates),
 }
 
 #[derive(Debug)]
@@ -168,7 +243,7 @@ fn read() {
         let record: Result<PixelPlacement, csv::Error> = result;
         match record {
             Ok(pixel_placement) => {
-                println!("{:?}", pixel_placement);
+                // println!("{:?}", pixel_placement);
             }
             Err(error) => {
                 println!("Error parsing line: {}", error);
