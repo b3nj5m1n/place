@@ -1,14 +1,16 @@
-use std::error::Error;
 use std::fs::File;
 use std::io;
-use std::process;
 use std::str::FromStr;
 
 use chrono::prelude::*;
 use clap::{Arg, Command};
+use iter_progress::ProgressableIter;
+use num_format::{Locale, ToFormattedString};
 use serde::de::Error as SerdeError;
 use serde::de::Visitor;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqliteJournalMode, SqliteSynchronous};
+use sqlx::{Connection, Executor};
 
 struct PixelPlacementVisotor {}
 
@@ -227,6 +229,21 @@ enum PlacementYear {
     _2017,
     _2022,
 }
+impl From<PlacementYear> for u16 {
+    fn from(year: PlacementYear) -> Self {
+        match year {
+            PlacementYear::_2017 => {
+                return 2017;
+            }
+            PlacementYear::_2022 => {
+                return 2022;
+            }
+            _ => {
+                panic!("Trying to write unkown year to database.");
+            }
+        }
+    }
+}
 
 impl<'de> Deserialize<'de> for PixelPlacement {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -237,27 +254,160 @@ impl<'de> Deserialize<'de> for PixelPlacement {
     }
 }
 
-fn read<R: io::Read>(reader: R) {
+async fn read<R: io::Read>(reader: R, config: &mut Config) {
     let mut rdr = csv::Reader::from_reader(reader);
-    for result in rdr.deserialize() {
+    for (state, result) in rdr.deserialize().progress() {
+        state.do_every_n_sec(5., |state| {
+            println!(
+                "Inserted {:>11} records at a rate of {} per sec.",
+                state.num_done().to_formatted_string(&Locale::en),
+                (state.rate() as i64).to_formatted_string(&Locale::en)
+            );
+        });
         let record: Result<PixelPlacement, csv::Error> = result;
-        match record {
-            Ok(pixel_placement) => {
+        write(record, config).await;
+    }
+}
+
+struct Config {
+    db: Option<SqliteConnection>,
+    stout: bool,
+}
+
+async fn write(placement: Result<PixelPlacement, csv::Error>, config: &mut Config) {
+    match placement {
+        Ok(pixel_placement) => {
+            if config.stout {
                 println!("{:?}", pixel_placement);
             }
-            Err(error) => {
+            if let Some(conn) = &mut config.db {
+                match pixel_placement.coordinates {
+                    PlacementCoordinates::Tile(coordinates) => {
+                        let query = sqlx::query(
+                            "INSERT INTO placements (ts, user_hash, coordinate_x, coordinate_y, color, year)
+                             VALUES (?, ?, ?, ?, ?, ?)",
+                        )
+                        .bind(pixel_placement.timestamp)
+                        .bind(pixel_placement.user_hash)
+                        .bind(coordinates.x)
+                        .bind(coordinates.y)
+                        .bind(pixel_placement.color)
+                        .bind(u16::from(pixel_placement.year));
+                        conn.execute(query).await.unwrap();
+                    }
+                    PlacementCoordinates::Rect(coordinates_1, coordinates_2) => {
+                        let query = sqlx::query(
+                            "INSERT INTO placements_moderation (ts, user_hash, coordinate_x_1, coordinate_y_1, coordinate_x_2, coordinate_y_2, color, year)
+                             VALUES (?, ?, ?, ?, ?, ?)",
+                        )
+                        .bind(pixel_placement.timestamp)
+                        .bind(pixel_placement.user_hash)
+                        .bind(coordinates_1.x)
+                        .bind(coordinates_1.y)
+                        .bind(coordinates_2.x)
+                        .bind(coordinates_2.y)
+                        .bind(pixel_placement.color)
+                        .bind(u16::from(pixel_placement.year));
+                        conn.execute(query).await.unwrap();
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            if config.stout {
                 println!("Error parsing line: {}", error);
             }
         }
     }
 }
 
-fn main() {
-    // read();
+#[tokio::main]
+async fn main() {
     let m = Command::new("r/place dataset parser")
         .about("Parses 2017 & 2022 datasets from r/place")
         .arg(Arg::new("files").min_values(1))
+        .arg(Arg::new("database").short('d').takes_value(true))
+        .arg(Arg::new("stdout").short('s').takes_value(true))
         .get_matches();
+
+    let mut config = Config {
+        db: None,
+        stout: false,
+    };
+
+    if let Some(filename) = m.value_of("database") {
+        let database_url = format!("sqlite://{}", filename);
+        let connection_options = SqliteConnectOptions::from_str(&database_url)
+            .unwrap()
+            .create_if_missing(true)
+            .journal_mode(SqliteJournalMode::Wal)
+            .synchronous(SqliteSynchronous::Normal);
+        let conn = SqliteConnection::connect_with(&connection_options).await;
+        match conn {
+            Ok(conn) => {
+                config.db = Some(conn);
+                config.stout = false;
+            }
+            Err(_error) => {
+                panic!(
+                    "Error trying to establish database connection to {}",
+                    filename
+                );
+            }
+        }
+    }
+
+    if let Some(conn) = &mut config.db {
+        conn.execute(
+            r#"
+                    DROP TABLE IF EXISTS placements;
+                    CREATE TABLE IF NOT EXISTS placements (
+                      ts INTEGER,
+                      user_hash TEXT,
+                      coordinate_x INTEGER,
+                      coordinate_y INTEGER,
+                      color TEXT,
+                      year INTERGER,
+                      CHECK (year = 2017 or year = 2022),
+                      CHECK (
+                        ( coordinate_x >= 0 AND coordinate_y >= 0)
+                        AND
+                        (
+                          ( year = 2022 AND coordinate_x < 2000 AND coordinate_y < 2000)
+                          OR
+                          ( year = 2017 AND coordinate_x <= 1000 AND coordinate_y <= 1000)
+                        )
+                      )
+                    );
+                    /* CREATE INDEX indx_placements_user ON placements (user_hash);
+                    CREATE INDEX indx_placements_coordinate ON placements (coordinate_x, coordinate_y);
+                    CREATE INDEX indx_placements_color ON placements (color); */
+                    DROP TABLE IF EXISTS placements_moderation;
+                    CREATE TABLE IF NOT EXISTS placements_moderation (
+                      ts INTEGER,
+                      user_hash TEXT,
+                      coordinate_x_1 INTEGER,
+                      coordinate_y_1 INTEGER,
+                      coordinate_x_2 INTEGER,
+                      coordinate_y_2 INTEGER,
+                      color TEXT,
+                      year INTERGER,
+                      CHECK (year = 2022),
+                      CHECK (
+                        ( coordinate_x_1 >= 0 AND coordinate_y_1 >= 0)
+                        AND
+                        ( coordinate_x_1 < 2000 AND coordinate_y_1 < 2000)
+                        AND
+                        ( coordinate_x_2 >= 0 AND coordinate_y_2 >= 0)
+                        AND
+                        ( coordinate_x_2 < 2000 AND coordinate_y_2 < 2000)
+                      )
+                    );
+        "#,
+        )
+        .await
+        .unwrap();
+    }
 
     match m.values_of("files") {
         Some(values) => {
@@ -267,17 +417,17 @@ fn main() {
                     Ok(file) => {
                         files.push(file);
                     }
-                    Err(error) => {
+                    Err(_error) => {
                         panic!("Error trying to read file {}", filename);
                     }
                 }
             }
             for file in files {
-                read(file);
+                read(file, &mut config).await;
             }
         }
         None => {
-            read(io::stdin());
+            read(io::stdin(), &mut config).await;
         }
     }
 }
