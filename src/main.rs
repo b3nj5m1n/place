@@ -433,8 +433,9 @@ async fn main() {
     if let Some(conn) = &mut config.db {
         conn.execute(
             r#"
-                    DROP TABLE IF EXISTS placements;
-                    CREATE TABLE IF NOT EXISTS placements (
+            DROP TABLE placements;
+            DROP TABLE placements_moderation;
+            CREATE TABLE placements (
                       ts INTEGER,
                       user_hash TEXT,
                       coordinate_x INTEGER,
@@ -452,11 +453,7 @@ async fn main() {
                         )
                       )
                     );
-                    /* CREATE INDEX indx_placements_user ON placements (user_hash);
-                    CREATE INDEX indx_placements_coordinate ON placements (coordinate_x, coordinate_y);
-                    CREATE INDEX indx_placements_color ON placements (color); */
-                    DROP TABLE IF EXISTS placements_moderation;
-                    CREATE TABLE IF NOT EXISTS placements_moderation (
+            CREATE TABLE placements_moderation (
                       ts INTEGER,
                       user_hash TEXT,
                       coordinate_x_1 INTEGER,
@@ -476,6 +473,11 @@ async fn main() {
                         ( coordinate_x_2 < 2000 AND coordinate_y_2 < 2000)
                       )
                     );
+            CREATE INDEX indx_placements_coordinate ON placements (coordinate_x, coordinate_y);
+            CREATE INDEX indx_placements_color ON placements (color);
+            CREATE INDEX indx_placements_user ON placements (user_hash);
+            CREATE INDEX indx_placements_ts ON placements (ts);
+            CREATE INDEX indx_placements_year ON placements (year);
         "#,
         )
         .await
