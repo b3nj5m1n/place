@@ -503,4 +503,8 @@ async fn main() {
             read(io::stdin(), &mut config).await;
         }
     }
+
+    if let Some(conn) = config.db {
+        conn.close();
+    }
 }
