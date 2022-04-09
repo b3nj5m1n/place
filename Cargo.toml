@@ -7,5 +7,7 @@ edition = "2021"
 
 [dependencies]
 chrono = "0.4.19"
+clap = "3.1.8"
 csv = "1.1.6"
 serde = { version = "1.0.136", features = ["derive"] }
+sqlite = "0.26.0"

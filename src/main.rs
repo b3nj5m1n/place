@@ -1,9 +1,11 @@
 use std::error::Error;
+use std::fs::File;
 use std::io;
 use std::process;
 use std::str::FromStr;
 
 use chrono::prelude::*;
+use clap::{Arg, Command};
 use serde::de::Error as SerdeError;
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -184,8 +186,6 @@ impl<'de> Visitor<'de> for PixelPlacementVisotor {
             }
         }
 
-        if is_rect { println!("Rect from {:?} to {:?}.", coordinates_1, coordinates_2); }
-
         Ok(PixelPlacement {
             timestamp,
             user_hash,
@@ -237,13 +237,13 @@ impl<'de> Deserialize<'de> for PixelPlacement {
     }
 }
 
-fn read() {
-    let mut rdr = csv::Reader::from_reader(io::stdin());
+fn read<R: io::Read>(reader: R) {
+    let mut rdr = csv::Reader::from_reader(reader);
     for result in rdr.deserialize() {
         let record: Result<PixelPlacement, csv::Error> = result;
         match record {
             Ok(pixel_placement) => {
-                // println!("{:?}", pixel_placement);
+                println!("{:?}", pixel_placement);
             }
             Err(error) => {
                 println!("Error parsing line: {}", error);
@@ -253,5 +253,31 @@ fn read() {
 }
 
 fn main() {
-    read();
+    // read();
+    let m = Command::new("r/place dataset parser")
+        .about("Parses 2017 & 2022 datasets from r/place")
+        .arg(Arg::new("files").min_values(1))
+        .get_matches();
+
+    match m.values_of("files") {
+        Some(values) => {
+            let mut files: Vec<File> = Vec::new();
+            for filename in values {
+                match File::open(filename) {
+                    Ok(file) => {
+                        files.push(file);
+                    }
+                    Err(error) => {
+                        panic!("Error trying to read file {}", filename);
+                    }
+                }
+            }
+            for file in files {
+                read(file);
+            }
+        }
+        None => {
+            read(io::stdin());
+        }
+    }
 }
