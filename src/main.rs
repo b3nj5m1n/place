@@ -9,7 +9,11 @@ use num_format::{Locale, ToFormattedString};
 use serde::de::Error as SerdeError;
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer};
-use sqlx::sqlite::{SqliteConnectOptions, SqliteConnection, SqliteJournalMode, SqliteSynchronous};
+use sqlx::query::Query;
+use sqlx::sqlite::{
+    Sqlite, SqliteArguments, SqliteConnectOptions, SqliteConnection, SqliteJournalMode,
+    SqliteSynchronous,
+};
 use sqlx::{Connection, Executor};
 
 struct PixelPlacementVisotor {}
@@ -229,8 +233,8 @@ enum PlacementYear {
     _2017,
     _2022,
 }
-impl From<PlacementYear> for u16 {
-    fn from(year: PlacementYear) -> Self {
+impl From<&PlacementYear> for u16 {
+    fn from(year: &PlacementYear) -> Self {
         match year {
             PlacementYear::_2017 => {
                 return 2017;
@@ -267,11 +271,104 @@ async fn read<R: io::Read>(reader: R, config: &mut Config) {
         let record: Result<PixelPlacement, csv::Error> = result;
         write(record, config).await;
     }
+    commit(config, true).await;
 }
 
 struct Config {
     db: Option<SqliteConnection>,
     stout: bool,
+    batch_tiles: Vec<PixelPlacement>,
+    batch_rect: Vec<PixelPlacement>,
+}
+
+fn get_query_rects<'a>(
+    pixel_placements: &'a Vec<PixelPlacement>,
+    query_string: &'a mut String,
+) -> Option<Query<'a, Sqlite, SqliteArguments<'a>>> {
+    if pixel_placements.len() == 0 {
+        return None;
+    }
+    query_string.push_str(
+        "INSERT INTO placements_moderation (ts, user_hash, coordinate_x_1, coordinate_y_1, coordinate_x_2, coordinate_y_2, color, year) VALUES",
+    );
+    for _ in 0..pixel_placements.len() - 1 {
+        query_string.push_str("(?, ?, ?, ?, ?, ?, ?, ?), ");
+    }
+    query_string.push_str("(?, ?, ?, ?, ?, ?, ?, ?)");
+    let mut query = sqlx::query(query_string);
+    for pixel_placement in pixel_placements {
+        if let PlacementCoordinates::Rect(coordinates_1, coordinates_2) =
+            &pixel_placement.coordinates
+        {
+            query = query
+                .bind(&pixel_placement.timestamp)
+                .bind(&pixel_placement.user_hash)
+                .bind(&coordinates_1.x)
+                .bind(&coordinates_1.y)
+                .bind(&coordinates_2.x)
+                .bind(&coordinates_2.y)
+                .bind(&pixel_placement.color)
+                .bind(u16::from(&pixel_placement.year));
+        } else {
+            panic!("Mixed tile and rect placements");
+        }
+    }
+    return Some(query);
+}
+fn get_query_tiles<'a>(
+    pixel_placements: &'a Vec<PixelPlacement>,
+    query_string: &'a mut String,
+) -> Option<Query<'a, Sqlite, SqliteArguments<'a>>> {
+    if pixel_placements.len() == 0 {
+        return None;
+    }
+    query_string.push_str(
+        "INSERT INTO placements (ts, user_hash, coordinate_x, coordinate_y, color, year) VALUES",
+    );
+    for _ in 0..pixel_placements.len() - 1 {
+        query_string.push_str("(?, ?, ?, ?, ?, ?), ");
+    }
+    query_string.push_str("(?, ?, ?, ?, ?, ?)");
+    let mut query = sqlx::query(query_string);
+    for pixel_placement in pixel_placements {
+        if let PlacementCoordinates::Tile(coordinates) = &pixel_placement.coordinates {
+            query = query
+                .bind(&pixel_placement.timestamp)
+                .bind(&pixel_placement.user_hash)
+                .bind(&coordinates.x)
+                .bind(&coordinates.y)
+                .bind(&pixel_placement.color)
+                .bind(u16::from(&pixel_placement.year));
+        } else {
+            panic!("Mixed tile and rect placements");
+        }
+    }
+    return Some(query);
+}
+
+const BATCH_SIZE_TILE: usize = 5461;
+const BATCH_SIZE_RECT: usize = 10;
+
+async fn commit(config: &mut Config, ignore_limit: bool) {
+    if let Some(conn) = &mut config.db {
+        if config.batch_tiles.len() >= BATCH_SIZE_TILE || ignore_limit {
+            let mut query_string = String::from("");
+            if let Some(query) = get_query_tiles(&config.batch_tiles, &mut query_string) {
+                conn.execute(query).await.unwrap();
+            }
+            config.batch_tiles = Vec::with_capacity(BATCH_SIZE_TILE);
+        }
+        if config.batch_rect.len() >= BATCH_SIZE_RECT || ignore_limit {
+            let mut query_string = String::from("");
+            if let Some(query) = get_query_rects(&config.batch_rect, &mut query_string) {
+                conn.execute(query).await.unwrap();
+            }
+            config.batch_rect = Vec::with_capacity(BATCH_SIZE_RECT);
+        }
+    } else {
+        config.batch_tiles = Vec::with_capacity(BATCH_SIZE_TILE);
+        config.batch_rect = Vec::with_capacity(BATCH_SIZE_RECT);
+    }
 }
 
 async fn write(placement: Result<PixelPlacement, csv::Error>, config: &mut Config) {
@@ -280,38 +377,12 @@ async fn write(placement: Result<PixelPlacement, csv::Error>, config: &mut Confi
             if config.stout {
                 println!("{:?}", pixel_placement);
             }
-            if let Some(conn) = &mut config.db {
-                match pixel_placement.coordinates {
-                    PlacementCoordinates::Tile(coordinates) => {
-                        let query = sqlx::query(
-                            "INSERT INTO placements (ts, user_hash, coordinate_x, coordinate_y, color, year)
-                             VALUES (?, ?, ?, ?, ?, ?)",
-                        )
-                        .bind(pixel_placement.timestamp)
-                        .bind(pixel_placement.user_hash)
-                        .bind(coordinates.x)
-                        .bind(coordinates.y)
-                        .bind(pixel_placement.color)
-                        .bind(u16::from(pixel_placement.year));
-                        conn.execute(query).await.unwrap();
-                    }
-                    PlacementCoordinates::Rect(coordinates_1, coordinates_2) => {
-                        let query = sqlx::query(
-                            "INSERT INTO placements_moderation (ts, user_hash, coordinate_x_1, coordinate_y_1, coordinate_x_2, coordinate_y_2, color, year)
-                             VALUES (?, ?, ?, ?, ?, ?)",
-                        )
-                        .bind(pixel_placement.timestamp)
-                        .bind(pixel_placement.user_hash)
-                        .bind(coordinates_1.x)
-                        .bind(coordinates_1.y)
-                        .bind(coordinates_2.x)
-                        .bind(coordinates_2.y)
-                        .bind(pixel_placement.color)
-                        .bind(u16::from(pixel_placement.year));
-                        conn.execute(query).await.unwrap();
-                    }
-                }
+            if let PlacementCoordinates::Tile(_) = pixel_placement.coordinates {
+                config.batch_tiles.push(pixel_placement);
+            } else {
+                config.batch_rect.push(pixel_placement);
             }
+            commit(config, false).await;
         }
         Err(error) => {
             if config.stout {
@@ -333,6 +404,8 @@ async fn main() {
     let mut config = Config {
         db: None,
         stout: false,
+        batch_tiles: Vec::with_capacity(BATCH_SIZE_TILE),
+        batch_rect: Vec::with_capacity(BATCH_SIZE_RECT),
     };
 
     if let Some(filename) = m.value_of("database") {
